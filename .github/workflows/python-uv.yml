@@ -1,0 +1,81 @@
+name: Python with uv
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Exact Python runtime version
+        required: true
+        type: string
+      validation-command:
+        description: Caller-owned validation command, executed with bash fail-fast
+        required: true
+        type: string
+      working-directory:
+        description: Project directory relative to the checked-out repository
+        default: .
+        type: string
+      install-dependencies:
+        description: Install dependencies from the caller uv.lock
+        default: true
+        type: boolean
+      all-extras:
+        description: Install every optional dependency extra
+        default: true
+        type: boolean
+      workflow-lint:
+        description: Install verified actionlint and validate repository workflows
+        default: true
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  validate:
+    name: CI passed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install verified tools and Python
+        env:
+          PYTHON_VERSION: ${{ inputs.python-version }}
+          WORKFLOW_LINT: ${{ inputs.workflow-lint }}
+        run: |
+          set -euo pipefail
+          tools_dir="$(mktemp -d "$RUNNER_TEMP/ci-tools.XXXXXX")"
+          curl --fail --location --retry 3 --max-time 120 \
+            https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-unknown-linux-gnu.tar.gz \
+            --output "$tools_dir/uv.tar.gz"
+          echo "a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5  $tools_dir/uv.tar.gz" | sha256sum --check
+          tar -xzf "$tools_dir/uv.tar.gz" -C "$tools_dir" --strip-components=1 uv-x86_64-unknown-linux-gnu/uv
+          if [ "$WORKFLOW_LINT" = true ]; then
+            curl --fail --location --retry 3 --max-time 120 \
+              https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+              --output "$tools_dir/actionlint.tar.gz"
+            echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $tools_dir/actionlint.tar.gz" | sha256sum --check
+            tar -xzf "$tools_dir/actionlint.tar.gz" -C "$tools_dir" actionlint
+          fi
+          echo "$tools_dir" >> "$GITHUB_PATH"
+          "$tools_dir/uv" python install "$PYTHON_VERSION"
+      - name: Install locked dependencies
+        if: inputs.install-dependencies
+        env:
+          PYTHON_VERSION: ${{ inputs.python-version }}
+          ALL_EXTRAS: ${{ inputs.all-extras }}
+        run: |
+          set -euo pipefail
+          args=(sync --locked --python "$PYTHON_VERSION")
+          if [ "$ALL_EXTRAS" = true ]; then args+=(--all-extras); fi
+          uv "${args[@]}"
+      - name: Validate workflow syntax
+        if: inputs.workflow-lint
+        run: actionlint -shellcheck= -pyflakes=
+      - name: Run project validation
+        env:
+          VALIDATION_COMMAND: ${{ inputs.validation-command }}
+        run: bash --noprofile --norc -e -o pipefail -c "$VALIDATION_COMMAND"
